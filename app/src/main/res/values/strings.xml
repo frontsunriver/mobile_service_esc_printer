@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">CaposBackground</string>
+    <string name="service_running">HTTP server running</string>
+    <string name="channel_name">HTTP Server</string>
+    <string name="channel_description">Shows when the mobile HTTP server is running in the background.</string>
+    <string name="start_server">Start HTTP server</string>
+    <string name="stop_server">Stop HTTP server</string>
+    <string name="server_url">Server URL (same network):</string>
+    <string name="server_stopped">Server stopped. Start to receive HTTP requests.</string>
+    <string name="url_copied">URL copied.</string>
+    <string name="copy_url">Copy URL</string>
+</resources>
