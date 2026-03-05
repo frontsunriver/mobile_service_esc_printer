@@ -73,7 +73,7 @@ public class PrintQueueManager {
         config.loadFromFile();
     }
 
-    /** Path where printer_ips.txt is read from. Use this to tell the user where to place the file. */
+    /** Path where printer_ips.json is read from. Use this to tell the user where to place the file. */
     public static String getPrinterConfigFilePath(Context context) {
         return PrinterConfig.getConfigFilePath(context != null ? context.getApplicationContext() : null);
     }

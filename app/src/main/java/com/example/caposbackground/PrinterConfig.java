@@ -2,6 +2,7 @@ package com.example.caposbackground;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
@@ -18,7 +19,10 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
+
+import org.json.JSONObject;
 
 /**
  * Printer IP configuration (thermal + kitchen1..5). Loads from external file first
@@ -30,10 +34,14 @@ public class PrinterConfig {
     private static final String TAG = "PrinterConfig";
     /** Subfolder inside the public Downloads directory (e.g. Download/CaposBackground/). */
     public static final String CONFIG_DIR = "CaposBackground";
-    /** Filename for the IP list inside the config folder. */
-    public static final String CONFIG_FILENAME = "printer_ips.txt";
+    /** Filename for the IP list (JSON format). */
+    public static final String CONFIG_FILENAME = "printer_ips.json";
+    /** Legacy key=value format filename for fallback. */
+    public static final String CONFIG_FILENAME_LEGACY = "printer_ips.txt";
 
     private static final String PREFS_NAME = "capos_printer_config";
+    /** Optional: user-selected config file URI (e.g. from Download/CaposBackground) via Storage Access Framework. */
+    private static final String KEY_CONFIG_FILE_URI = "printer_config_file_uri";
     private static final String KEY_THERMAL_IP = "printer_thermal_ip";
     private static final String KEY_KITCHEN_IP = "printer_kitchen_ip";
     private static final String KEY_KITCHEN1_IP = "printer_kitchen1_ip";
@@ -61,7 +69,7 @@ public class PrinterConfig {
     public PrinterConfig(Context context) {
         this.appContext = context.getApplicationContext();
         this.prefs = this.appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-//        loadFromFile();
+        loadFromFile();
     }
 
     /**
@@ -88,7 +96,7 @@ public class PrinterConfig {
         return dir;
     }
 
-    /** Download folder path for config (user places printer_ips.txt here). */
+    /** Download/CaposBackground folder path for config (user places printer_ips.json here). */
     public static File getConfigFileInDownload(Context context) {
         File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         return new File(new File(downloadsDir, CONFIG_DIR), CONFIG_FILENAME);
@@ -101,37 +109,95 @@ public class PrinterConfig {
         return new File(getConfigDir(context), CONFIG_FILENAME);
     }
 
-    /** Default content for printer_ips.txt when the file does not exist. */
+    /** Default content for printer_ips.json when the file does not exist. */
     private static String getDefaultConfigContent() {
-        return "# Printer IP list for CaposBackground\n"
-                + "# Edit the IPs below to match your thermal and kitchen printers. One key=value per line.\n"
-                + "# File location: use getConfigFilePath() in the app to see where this file is stored.\n\n"
-                + "thermal_ip=192.168.2.100\n"
-                + "kitchen_ip=192.168.2.101\n"
-                + "kitchen1_ip=192.168.2.102\n"
-                + "kitchen2_ip=192.168.2.103\n"
-                + "kitchen3_ip=192.168.2.104\n"
-                + "kitchen4_ip=\n"
-                + "kitchen5_ip=\n";
+        return "{\n"
+                + "  \"thermal_ip\": \"192.168.2.100\",\n"
+                + "  \"kitchen_ip\": \"192.168.2.101\",\n"
+                + "  \"kitchen1_ip\": \"192.168.2.102\",\n"
+                + "  \"kitchen2_ip\": \"192.168.2.103\",\n"
+                + "  \"kitchen3_ip\": \"192.168.2.104\",\n"
+                + "  \"kitchen4_ip\": \"\",\n"
+                + "  \"kitchen5_ip\": \"\"\n"
+                + "}\n";
     }
 
-    /** Path where user should place printer_ips.txt: Download/CaposBackground/printer_ips.txt */
+    /** Parse JSON config content into key-value map (e.g. "thermal_ip" -> "192.168.2.100"). Returns null on error. */
+    private Map<String, String> parseConfigFromJson(String content) {
+        if (content == null || content.trim().isEmpty()) return null;
+        try {
+            JSONObject obj = new JSONObject(content.trim());
+            Map<String, String> map = new HashMap<>();
+            Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                Object val = obj.opt(key);
+                if (val != null) map.put(key, String.valueOf(val).trim());
+            }
+            return map;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to parse JSON config", e);
+            return null;
+        }
+    }
+
+    /** Read full file content as UTF-8 string. Returns null on error. */
+    private String readFileContent(File file) {
+        if (file == null || !file.exists() || !file.canRead()) return null;
+        try (FileInputStream in = new FileInputStream(file);
+             BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+            return sb.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read file: " + file.getAbsolutePath(), e);
+            return null;
+        }
+    }
+
+    /** Path where user should place printer_ips.json: Download/CaposBackground/printer_ips.json */
     public static String getConfigFilePath(Context context) {
         if (context == null) return "(no context)";
         return getConfigFileInDownload(context).getAbsolutePath();
     }
 
-    /** (Re)load IP list: first from Download/CaposBackground/printer_ips.txt, then fallback to app storage. */
+    /** Set the config file URI (e.g. from "Select file" in app). Use this to load from Download/CaposBackground when the user picks the file. */
+    public static void setConfigFileUri(Context context, String uriString) {
+        if (context == null) return;
+        context.getApplicationContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putString(KEY_CONFIG_FILE_URI, uriString != null ? uriString : "").apply();
+    }
+
+    /** Clear the user-selected config file URI. */
+    public static void clearConfigFileUri(Context context) {
+        if (context == null) return;
+        context.getApplicationContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().remove(KEY_CONFIG_FILE_URI).apply();
+    }
+
+    /** (Re)load IP list: prefer user-selected file (Download path), then MediaStore/direct path, then app storage. */
     public void loadFromFile() {
         Map<String, String> map = null;
 
-        // 1) Try Download path (direct file read; works on older Android with storage permission)
-        File downloadFile = getConfigFileInDownload(appContext);
-        if (downloadFile.exists() && downloadFile.canRead()) {
-            map = parseConfigStream(null, downloadFile);
+        // 0) User previously selected a file (e.g. Download/CaposBackground/printer_ips.json) via SAF
+        String uriString = prefs.getString(KEY_CONFIG_FILE_URI, null);
+        if (uriString != null && !uriString.isEmpty()) {
+            try {
+                Uri uri = Uri.parse(uriString);
+                map = readAndParseConfigFromUri(appContext.getContentResolver(), uri);
+                if (map != null && !map.isEmpty()) {
+                    Log.d(TAG, "Loaded " + map.size() + " IP(s) from Download path (user-selected file)");
+                } else {
+                    map = null;
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to read user-selected config URI, clearing: " + e.getMessage());
+                prefs.edit().remove(KEY_CONFIG_FILE_URI).apply();
+            }
         }
 
-        // 2) On Android 10+, direct path may be blocked; try MediaStore (only finds files our app created)
+        // 1) On Android 10+, try MediaStore so we load from Download/CaposBackground/ (not app storage)
         if (map == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             map = loadFromDownloadViaMediaStore(appContext);
             if (map == null) {
@@ -140,12 +206,37 @@ public class PrinterConfig {
             }
         }
 
-        // 3) Fallback: app storage (always readable)
+        // 2) Try direct file path (works on Android 9 and below with storage permission, or legacy storage)
         if (map == null) {
-            File appFile = new File(getConfigDirFallback(appContext), CONFIG_FILENAME);
-            if (!appFile.exists()) ensureDefaultConfigFile(appFile);
+            File downloadFile = getConfigFileInDownload(appContext);
+            if (!downloadFile.exists() || !downloadFile.canRead()) {
+                File legacyFile = new File(getConfigDir(appContext), CONFIG_FILENAME_LEGACY);
+                if (legacyFile.exists() && legacyFile.canRead()) downloadFile = legacyFile;
+            }
+            if (downloadFile.exists() && downloadFile.canRead()) {
+                String content = readFileContent(downloadFile);
+                map = content != null ? parseConfigFromJson(content) : null;
+                if (map == null && content != null && content.contains("=") && !content.trim().startsWith("{")) {
+                    map = parseConfigStream(null, downloadFile);
+                }
+                if (map != null && !map.isEmpty()) {
+                    Log.d(TAG, "Loaded " + map.size() + " IP(s) from Download/CaposBackground/" + downloadFile.getName());
+                }
+            }
+        }
+
+        // 3) Fallback: app storage (only if Download path not available)
+        if (map == null) {
+            File appDir = getConfigDirFallback(appContext);
+            File appFile = new File(appDir, CONFIG_FILENAME);
+            if (!appFile.exists() || !appFile.canRead()) appFile = new File(appDir, CONFIG_FILENAME_LEGACY);
+            if (!appFile.exists()) ensureDefaultConfigFile(new File(appDir, CONFIG_FILENAME));
+            appFile = new File(appDir, CONFIG_FILENAME);
+            if (!appFile.exists() || !appFile.canRead()) appFile = new File(appDir, CONFIG_FILENAME_LEGACY);
             if (appFile.exists() && appFile.canRead()) {
-                map = parseConfigStream(null, appFile);
+                String content = readFileContent(appFile);
+                map = content != null ? parseConfigFromJson(content) : null;
+                if (map == null && content != null) map = parseConfigStream(null, appFile);
                 if (map != null) Log.d(TAG, "Using config from app storage: " + appFile.getAbsolutePath());
             }
         }
@@ -189,33 +280,110 @@ public class PrinterConfig {
     /** Load config from Download/CaposBackground/ via MediaStore (Android 10+). Returns null if not found or error. */
     private Map<String, String> loadFromDownloadViaMediaStore(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null;
+        android.content.ContentResolver cr = context.getContentResolver();
+        android.net.Uri uri = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        String[] projection = { MediaStore.Downloads._ID, MediaStore.Downloads.RELATIVE_PATH };
+        // Try exact paths used by the system for Download/CaposBackground/
+        String[] relativePathsToTry = {
+                CONFIG_DIR + "/",                                    // CaposBackground/
+                Environment.DIRECTORY_DOWNLOADS + "/" + CONFIG_DIR + "/"  // Download/CaposBackground/
+        };
+        for (String relativePath : relativePathsToTry) {
+            Map<String, String> map = loadFromMediaStoreWithPath(cr, uri, projection, relativePath);
+            if (map != null) return map;
+        }
+        // Fallback: query by display name only and prefer row where RELATIVE_PATH contains CaposBackground
         try {
-            String relativePath = CONFIG_DIR + "/";
-            android.content.ContentResolver cr = context.getContentResolver();
-            android.net.Uri uri = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-            String[] projection = { MediaStore.Downloads._ID };
-            String selection = MediaStore.Downloads.RELATIVE_PATH + "=? AND " + MediaStore.Downloads.DISPLAY_NAME + "=?";
-            String[] selectionArgs = new String[]{ relativePath, CONFIG_FILENAME };
+            String selection = MediaStore.Downloads.DISPLAY_NAME + "=?";
+            String[] selectionArgs = new String[]{ CONFIG_FILENAME };
             try (android.database.Cursor c = cr.query(uri, projection, selection, selectionArgs, null)) {
-                if (c != null && c.moveToFirst()) {
-                    long id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Downloads._ID));
-                    android.net.Uri contentUri = android.content.ContentUris.withAppendedId(uri, id);
-                    try (InputStream in = cr.openInputStream(contentUri)) {
-                        Map<String, String> map = parseConfigStream(in, null);
+                if (c != null) {
+                    int idCol = c.getColumnIndex(MediaStore.Downloads._ID);
+                    int pathCol = c.getColumnIndex(MediaStore.Downloads.RELATIVE_PATH);
+                    long preferredId = -1;
+                    String preferredPath = null;
+                    while (c.moveToNext()) {
+                        String relPath = pathCol >= 0 ? c.getString(pathCol) : "";
+                        if (relPath != null && relPath.contains(CONFIG_DIR)) {
+                            preferredId = c.getLong(idCol);
+                            preferredPath = relPath;
+                            break;
+                        }
+                        if (preferredId < 0) {
+                            preferredId = c.getLong(idCol);
+                            preferredPath = relPath;
+                        }
+                    }
+                    if (preferredId >= 0) {
+                        android.net.Uri contentUri = android.content.ContentUris.withAppendedId(uri, preferredId);
+                        Map<String, String> map = readAndParseConfigFromUri(cr, contentUri);
                         if (map != null && !map.isEmpty()) {
-                            Log.d(TAG, "Loaded " + map.size() + " IP(s) from Download via MediaStore");
+                            Log.d(TAG, "Loaded " + map.size() + " IP(s) from Download/CaposBackground via MediaStore (path: " + preferredPath + ")");
                             return map;
                         }
                     }
                 }
             }
         } catch (Exception e) {
-            Log.e(TAG, "MediaStore read failed for Download/CaposBackground/" + CONFIG_FILENAME, e);
+            Log.e(TAG, "MediaStore read failed for " + CONFIG_FILENAME, e);
         }
         return null;
     }
 
-    /** Create default printer_ips.txt in Download/CaposBackground/ via MediaStore (Android 10+). App can then read it. */
+    private Map<String, String> loadFromMediaStoreWithPath(android.content.ContentResolver cr, android.net.Uri uri,
+                                                           String[] projection, String relativePath) {
+        try {
+            String selection = MediaStore.Downloads.RELATIVE_PATH + "=? AND " + MediaStore.Downloads.DISPLAY_NAME + "=?";
+            String[] selectionArgs = new String[]{ relativePath, CONFIG_FILENAME };
+            try (android.database.Cursor c = cr.query(uri, projection, selection, selectionArgs, null)) {
+                if (c != null && c.moveToFirst()) {
+                    long id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Downloads._ID));
+                    android.net.Uri contentUri = android.content.ContentUris.withAppendedId(uri, id);
+                    Map<String, String> map = readAndParseConfigFromUri(cr, contentUri);
+                    if (map != null && !map.isEmpty()) {
+                        Log.d(TAG, "Loaded " + map.size() + " IP(s) from Download/CaposBackground via MediaStore");
+                        return map;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.d(TAG, "MediaStore query with path " + relativePath + " failed: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private Map<String, String> readAndParseConfigFromUri(android.content.ContentResolver cr, android.net.Uri contentUri) {
+        try (InputStream in = cr.openInputStream(contentUri)) {
+            String content = readStreamContent(in);
+            Map<String, String> map = content != null ? parseConfigFromJson(content) : null;
+            if (map == null && content != null && content.contains("=") && !content.trim().startsWith("{")) {
+                try (InputStream in2 = cr.openInputStream(contentUri)) {
+                    map = parseConfigStream(in2, null);
+                }
+            }
+            return map;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read from content URI", e);
+            return null;
+        }
+    }
+
+    /** Read InputStream to UTF-8 string. Caller closes the stream. */
+    private String readStreamContent(InputStream in) {
+        if (in == null) return null;
+        try {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+            return sb.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read stream", e);
+            return null;
+        }
+    }
+
+    /** Create default printer_ips.json in Download/CaposBackground/ via MediaStore (Android 10+). App can then read it. */
     private void ensureDefaultConfigFileInDownloadViaMediaStore(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
         try {
@@ -239,7 +407,7 @@ public class PrinterConfig {
         }
     }
 
-    /** Create printer_ips.txt with default content if it does not exist. */
+    /** Create printer_ips.json with default content if it does not exist. */
     private void ensureDefaultConfigFile(File file) {
         if (file.exists()) return;
         try {
@@ -257,13 +425,12 @@ public class PrinterConfig {
 
     /** Returns IP from file if present, otherwise the const default (no prefs). */
     private String getIp(String fileKey, String constDefault) {
-//        Map<String, String> ips = fileIps;
-//        if (ips != null) {
-//            String fromFile = ips.get(fileKey);
-//            if (fromFile != null && !fromFile.trim().isEmpty()) return fromFile.trim();
-//        }
-//        return emptyToNull(constDefault);
-        return constDefault;
+        Map<String, String> ips = fileIps;
+        if (ips != null) {
+            String fromFile = ips.get(fileKey);
+            if (fromFile != null && !fromFile.trim().isEmpty()) return fromFile.trim();
+        }
+        return emptyToNull(constDefault);
     }
 
     public int getPort() {

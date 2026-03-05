@@ -19,6 +19,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
@@ -31,6 +33,23 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1;
     private static final int STORAGE_PERMISSION_REQUEST = 2;
+
+    private final ActivityResultLauncher<Intent> selectConfigFileLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                if (result.getResultCode() != RESULT_OK || result.getData() == null) return;
+                android.net.Uri uri = result.getData().getData();
+                if (uri == null) return;
+                try {
+                    getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    PrinterConfig.setConfigFileUri(this, uri.toString());
+                    PrintQueueManager.getInstance(this).reloadPrinterConfig();
+                    Toast.makeText(this, R.string.printer_config_selected, Toast.LENGTH_SHORT).show();
+                } catch (SecurityException e) {
+                    Log.e(TAG, "Could not take persistable permission for config file", e);
+                    Toast.makeText(this, "Could not save file access. Try again.", Toast.LENGTH_SHORT).show();
+                }
+            });
 
     /** Server state from broadcasts (works even when getInstance() is null). */
     private boolean serverRunning;
@@ -82,6 +101,7 @@ public class MainActivity extends AppCompatActivity {
         ensureStoragePermission();
         buttonToggle.setOnClickListener(v -> toggleServer());
         buttonCopy.setOnClickListener(v -> copyUrlToClipboard());
+        findViewById(R.id.button_select_config).setOnClickListener(v -> openPrinterConfigFilePicker());
     }
 
     @Override
@@ -111,7 +131,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** Request storage permission so Download/CaposBackground/printer_ips.txt can be read (Android 9 and below). */
+    /** Request storage permission so Download/CaposBackground/printer_ips.json can be read (Android 9 and below). */
     private void ensureStoragePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return; // Android 10+ uses MediaStore, no path permission
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
@@ -186,6 +206,16 @@ public class MainActivity extends AppCompatActivity {
             buttonCopy.setVisibility(View.GONE);
             status.setText(R.string.server_stopped);
         }
+    }
+
+    /** Open system file picker so user can select printer_ips.json (e.g. from Download/CaposBackground). */
+    private void openPrinterConfigFilePicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{ "application/json", "text/plain" });
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        selectConfigFileLauncher.launch(intent);
     }
 
     private void copyUrlToClipboard() {

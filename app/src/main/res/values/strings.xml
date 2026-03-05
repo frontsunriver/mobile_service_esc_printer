@@ -7,6 +7,8 @@
     <string name="stop_server">Stop HTTP server</string>
     <string name="server_url">Server URL (same network):</string>
     <string name="server_stopped">Server stopped. Start to receive HTTP requests.</string>
-    <string name="url_copied">URL copied.</string>
     <string name="copy_url">Copy URL</string>
+    <string name="url_copied">URL copied to clipboard</string>
+    <string name="select_printer_config">Select printer_ips.json</string>
+    <string name="printer_config_selected">Using config from selected file (e.g. Download/CaposBackground)</string>
 </resources>

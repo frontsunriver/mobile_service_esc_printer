@@ -1,7 +1,0 @@
-thermal_ip=10.88.111.110
-kitchen_ip=10.88.111.110
-kitchen1_ip=192.168.2.102
-kitchen2_ip=192.168.2.103
-kitchen3_ip=192.168.2.104
-kitchen4_ip=
-kitchen5_ip=
