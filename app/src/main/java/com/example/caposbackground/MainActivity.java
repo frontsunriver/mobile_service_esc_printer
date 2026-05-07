@@ -8,6 +8,7 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.ContentResolver;
 import android.os.Build;
 import android.util.Log;
 import android.os.Bundle;
@@ -34,20 +35,55 @@ public class MainActivity extends AppCompatActivity {
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1;
     private static final int STORAGE_PERMISSION_REQUEST = 2;
 
-    private final ActivityResultLauncher<Intent> selectConfigFileLauncher = registerForActivityResult(
+    private final ActivityResultLauncher<String[]> selectConfigFileLauncher = registerForActivityResult(
+            new ActivityResultContracts.OpenDocument(),
+            uri -> {
+                if (uri == null) return;
+                final ContentResolver resolver = getContentResolver();
+                try {
+                    resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    PrinterConfig.setConfigFileUri(this, uri.toString());
+                    PrintQueueManager queue = PrintQueueManager.getInstance(this);
+                    if (queue != null) queue.reloadPrinterConfig();
+                    Toast.makeText(this, R.string.printer_config_selected, Toast.LENGTH_SHORT).show();
+                } catch (SecurityException e) {
+                    // Some providers don't support persistable permissions; still try immediate read.
+                    Log.w(TAG, "Persistable permission failed; trying temporary read", e);
+                    try (java.io.InputStream in = resolver.openInputStream(uri)) {
+                        if (in != null) {
+                            PrinterConfig.setConfigFileUri(this, uri.toString());
+                            PrintQueueManager queue = PrintQueueManager.getInstance(this);
+                            if (queue != null) queue.reloadPrinterConfig();
+                            Toast.makeText(this, R.string.printer_config_selected_temporary, Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                    } catch (Exception ex) {
+                        Log.e(TAG, "Temporary read also failed", ex);
+                    }
+                    Toast.makeText(this, R.string.printer_config_select_failed, Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    // Android 12 providers sometimes throw IllegalArgumentException/RuntimeException here.
+                    Log.e(TAG, "Failed to process selected config URI", e);
+                    Toast.makeText(this, R.string.printer_config_select_failed, Toast.LENGTH_SHORT).show();
+                }
+            });
+    private final ActivityResultLauncher<Intent> selectConfigFileFallbackLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() != RESULT_OK || result.getData() == null) return;
                 android.net.Uri uri = result.getData().getData();
                 if (uri == null) return;
-                try {
-                    getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                final ContentResolver resolver = getContentResolver();
+                try (java.io.InputStream in = resolver.openInputStream(uri)) {
+                    if (in == null) throw new IllegalStateException("Cannot open selected file");
+                    // ACTION_GET_CONTENT may not support persistable permission; use temporary access.
                     PrinterConfig.setConfigFileUri(this, uri.toString());
-                    PrintQueueManager.getInstance(this).reloadPrinterConfig();
-                    Toast.makeText(this, R.string.printer_config_selected, Toast.LENGTH_SHORT).show();
-                } catch (SecurityException e) {
-                    Log.e(TAG, "Could not take persistable permission for config file", e);
-                    Toast.makeText(this, "Could not save file access. Try again.", Toast.LENGTH_SHORT).show();
+                    PrintQueueManager queue = PrintQueueManager.getInstance(this);
+                    if (queue != null) queue.reloadPrinterConfig();
+                    Toast.makeText(this, R.string.printer_config_selected_temporary, Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    Log.e(TAG, "Fallback picker failed", e);
+                    Toast.makeText(this, R.string.printer_config_select_failed, Toast.LENGTH_SHORT).show();
                 }
             });
 
@@ -210,12 +246,20 @@ public class MainActivity extends AppCompatActivity {
 
     /** Open system file picker so user can select printer_ips.json (e.g. from Download/CaposBackground). */
     private void openPrinterConfigFilePicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{ "application/json", "text/plain" });
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        selectConfigFileLauncher.launch(intent);
+        try {
+            selectConfigFileLauncher.launch(new String[]{"*/*"});
+        } catch (Exception e) {
+            Log.w(TAG, "OpenDocument picker launch failed, trying fallback", e);
+            try {
+                Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+                fallback.setType("*/*");
+                fallback.addCategory(Intent.CATEGORY_OPENABLE);
+                selectConfigFileFallbackLauncher.launch(Intent.createChooser(fallback, "Select printer_ips.json"));
+            } catch (Exception ex) {
+                Log.e(TAG, "No file picker available", ex);
+                Toast.makeText(this, R.string.printer_config_select_failed, Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
     private void copyUrlToClipboard() {
