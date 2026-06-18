@@ -8,6 +8,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static com.example.caposbackground.escpos.EscPosCommands.*;
@@ -38,6 +39,7 @@ import static com.example.caposbackground.escpos.EscPosCommands.*;
  *
  * <p>Line formatting (same as Node module): use [L] left, [C] center, [R] right; &lt;b&gt;&lt;/b&gt; for bold,
  * &lt;u&gt;&lt;/u&gt; for underline, &lt;font size="big"&gt; for large text. Table lines: [L]col1[R]col2[R]col3.
+ * Split lines: [L]label [R]value prints label left and value right on one row.
  */
 public class EscPosPrinter {
 
@@ -45,6 +47,11 @@ public class EscPosPrinter {
     /** Connection timeout (ms). Increase if printer is slow to wake or network is slow. */
     private static final int DEFAULT_TIMEOUT_MS = 20000;
     private static final Pattern TAG_PATTERN = Pattern.compile("<[^>]*>");
+    private static final Pattern ALIGN_MARKER = Pattern.compile("\\[(L|R|C)\\]");
+
+    /** Characters per line (80 mm, normal font). Matches {@link #DEFAULT_COL_WIDTHS} total. */
+    private static final int LINE_WIDTH = 48;
+    private static final int LINE_WIDTH_BIG = 24;
 
     /** Default column widths for receipt table (Name, QTY, Price). */
     public static final int[] DEFAULT_COL_WIDTHS = {34, 6, 8};
@@ -157,6 +164,74 @@ public class EscPosPrinter {
         return clean.trim();
     }
 
+    /** True when the line mixes left content with a later [R] (e.g. "[L]test [R]100" or "test [R]100"). */
+    private static boolean needsCompositeLine(String clean) {
+        if (clean == null || clean.isEmpty()) return false;
+        int rPos = clean.indexOf("[R]");
+        if (rPos < 0) return false;
+        if (rPos > 0) return true;
+        return clean.indexOf("[R]", 3) >= 0
+                || clean.indexOf("[L]", 3) >= 0
+                || clean.indexOf("[C]", 3) >= 0;
+    }
+
+    /** Collect text before/after align markers; [R] segments go to the right side. */
+    private static String[] parseCompositeLine(String clean) {
+        StringBuilder left = new StringBuilder();
+        StringBuilder right = new StringBuilder();
+        Matcher m = ALIGN_MARKER.matcher(clean);
+        int lastEnd = 0;
+        int currentAlign = 0;
+
+        while (m.find()) {
+            if (m.start() > lastEnd) {
+                appendCompositeChunk(clean.substring(lastEnd, m.start()).trim(), currentAlign, left, right);
+            }
+            currentAlign = alignCharToInt(m.group(1));
+            lastEnd = m.end();
+        }
+        if (lastEnd < clean.length()) {
+            appendCompositeChunk(clean.substring(lastEnd).trim(), currentAlign, left, right);
+        }
+        return new String[]{left.toString(), right.toString()};
+    }
+
+    private static void appendCompositeChunk(String chunk, int align, StringBuilder left, StringBuilder right) {
+        if (chunk.isEmpty()) return;
+        StringBuilder target = align == 2 ? right : left;
+        if (target.length() > 0) target.append(' ');
+        target.append(chunk);
+    }
+
+    private static int alignCharToInt(String c) {
+        if ("C".equals(c)) return 1;
+        if ("R".equals(c)) return 2;
+        return 0;
+    }
+
+    /** Pad left and right text to opposite ends of the line (ESC/POS has no true split alignment). */
+    private static String buildLeftRightLine(String left, String right, int width) {
+        left = left == null ? "" : left.trim();
+        right = right == null ? "" : right.trim();
+        if (left.isEmpty() && right.isEmpty()) return "";
+        if (left.isEmpty()) return right;
+        if (right.isEmpty()) return left;
+        if (left.length() + right.length() >= width) {
+            int maxLeft = width - right.length() - 1;
+            if (maxLeft < 1) {
+                return right.length() <= width ? right : right.substring(0, width);
+            }
+            if (left.length() > maxLeft) left = left.substring(0, maxLeft);
+        }
+        int spaces = width - left.length() - right.length();
+        if (spaces < 1) spaces = 1;
+        StringBuilder sb = new StringBuilder(width);
+        sb.append(left);
+        for (int i = 0; i < spaces; i++) sb.append(' ');
+        sb.append(right);
+        return sb.toString();
+    }
+
     private void align(int a) throws IOException {
         if (a == 1) out.write(ALIGN_CENTER);
         else if (a == 2) out.write(ALIGN_RIGHT);
@@ -171,7 +246,16 @@ public class EscPosPrinter {
             int[] align = {0};
             boolean[] bold = {false}, underline = {false}, big = {false};
             parseLine(line, align, bold, underline, big);
-            String text = stripPrefix(stripTags(line));
+            String clean = stripTags(line);
+            String text;
+            if (needsCompositeLine(clean)) {
+                String[] parts = parseCompositeLine(clean);
+                int width = big[0] ? LINE_WIDTH_BIG : LINE_WIDTH;
+                text = buildLeftRightLine(parts[0], parts[1], width);
+                align[0] = 0;
+            } else {
+                text = stripPrefix(clean);
+            }
             if (text.isEmpty()) continue;
             if (big[0]) out.write(FONT_BIG);
             else out.write(FONT_NORMAL);
@@ -181,6 +265,9 @@ public class EscPosPrinter {
             align(align[0]);
             out.write((text + "\n").getBytes(charset));
             out.flush();
+            out.write(FONT_NORMAL);
+            out.write(BOLD_OFF);
+            out.write(ALIGN_LEFT);
         }
         if (cutAtEnd) {
             for (int i = 0; i < 6; i++) {
@@ -193,6 +280,9 @@ public class EscPosPrinter {
     /** Print table: each line "[L]col1[R]col2[R]col3", padded to colWidths. Call init() once before if starting a new receipt. */
     public void printTable(String[] contentLines, int[] colWidths) throws IOException {
         if (contentLines == null || colWidths == null) return;
+        out.write(FONT_NORMAL);
+        out.write(BOLD_OFF);
+        out.write(ALIGN_LEFT);
         for (String line : contentLines) {
             if (line == null || line.trim().isEmpty()) continue;
             String[] parts = parseTableLine(line);
@@ -204,8 +294,6 @@ public class EscPosPrinter {
                 else while (cell.length() < w) cell = cell + " ";
                 row.append(cell);
             }
-            out.write(ALIGN_LEFT);
-            out.write(BOLD_OFF);
             out.write((row.toString() + "\n").getBytes(charset));
             out.flush();
         }
