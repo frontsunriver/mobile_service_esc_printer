@@ -63,8 +63,9 @@ public class MobileHttpServer extends NanoHTTPD {
         String header = bodyJson.optString("header", "");
         String content = bodyJson.optString("content", "");
         String footer = bodyJson.optString("footer", "");
-        PrintJob job = new PrintJob(id, header, content, footer);
-        PrintQueueManager.getInstance(appContext).enqueue(job, thermal, kitchen, k1, k2, k3, k4, k5);
+        PendingReceipt pending = new PendingReceipt(id, header, content, footer,
+                thermal, kitchen, k1, k2, k3, k4, k5);
+        PrintQueueManager.getInstance(appContext).enqueueFromPending(pending);
     }
 
     private static boolean isFlagSet(JSONObject json, String key) {

@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Queue-based printing: thermal (receipt) + kitchen + kitchen1..5.
@@ -48,8 +49,10 @@ public class PrintQueueManager {
     private final AtomicBoolean processingKitchen4 = new AtomicBoolean(false);
     private final AtomicBoolean processingKitchen5 = new AtomicBoolean(false);
 
-    /** IDs already enqueued (so we don't enqueue same row twice from DB poll). Removed after print or on failure. */
-    private final Set<Long> enqueuedIds = ConcurrentHashMap.newKeySet();
+    /** jobId:type keys already in a queue (HTTP + DB poll dedup). Cleared per target after print or on failure. */
+    private final Set<String> enqueuedKeys = ConcurrentHashMap.newKeySet();
+    /** Remaining printer targets per receipt row; DB row deleted when this reaches 0. */
+    private final ConcurrentHashMap<Long, AtomicInteger> jobTargetsRemaining = new ConcurrentHashMap<>();
 
     public static PrintQueueManager getInstance(Context context) {
         if (instance == null) {
@@ -79,12 +82,11 @@ public class PrintQueueManager {
     }
 
     /**
-     * Enqueue a pending receipt from DB poll. Skips if this id was already enqueued (avoids duplicates).
-     * Call this from the 8-sec poll when rows exist in the database.
+     * Enqueue a pending receipt (from HTTP after save, or from the 8-sec DB poll).
+     * Each printer target (thermal, kitchen, kitchen1..5) is enqueued at most once.
      */
     public void enqueueFromPending(PendingReceipt r) {
         if (r == null) return;
-        if (!enqueuedIds.add(r.id)) return; // already enqueued
         PrintJob job = new PrintJob(r.id, r.header, r.content, r.footer);
         enqueue(job, r.thermal, r.kitchen, r.kitchen1, r.kitchen2, r.kitchen3, r.kitchen4, r.kitchen5);
     }
@@ -92,35 +94,56 @@ public class PrintQueueManager {
     /** Enqueue one job to the queues indicated by flags (thermal, kitchen, kitchen1..5). */
     public void enqueue(PrintJob job, boolean thermal, boolean kitchen,
                         boolean k1, boolean k2, boolean k3, boolean k4, boolean k5) {
-        enqueuedIds.add(job.id); // avoid duplicate from DB poll
-        if (thermal) {
-            thermalQueue.add(job);
-            startProcessThermal();
+        int targetCount = countTargets(thermal, kitchen, k1, k2, k3, k4, k5);
+        if (targetCount == 0) return;
+        jobTargetsRemaining.computeIfAbsent(job.id, id -> new AtomicInteger(targetCount));
+        if (thermal && offerToQueue(job, TYPE_THERMAL, thermalQueue)) startProcessThermal();
+        if (kitchen && offerToQueue(job, TYPE_KITCHEN, kitchenQueue)) startProcessKitchen();
+        if (k1 && offerToQueue(job, TYPE_KITCHEN1, kitchen1Queue)) startProcessKitchen1();
+        if (k2 && offerToQueue(job, TYPE_KITCHEN2, kitchen2Queue)) startProcessKitchen2();
+        if (k3 && offerToQueue(job, TYPE_KITCHEN3, kitchen3Queue)) startProcessKitchen3();
+        if (k4 && offerToQueue(job, TYPE_KITCHEN4, kitchen4Queue)) startProcessKitchen4();
+        if (k5 && offerToQueue(job, TYPE_KITCHEN5, kitchen5Queue)) startProcessKitchen5();
+    }
+
+    private static int countTargets(boolean thermal, boolean kitchen,
+                                    boolean k1, boolean k2, boolean k3, boolean k4, boolean k5) {
+        int n = 0;
+        if (thermal) n++;
+        if (kitchen) n++;
+        if (k1) n++;
+        if (k2) n++;
+        if (k3) n++;
+        if (k4) n++;
+        if (k5) n++;
+        return n;
+    }
+
+    private static String enqueueKey(long jobId, int type) {
+        return jobId + ":" + type;
+    }
+
+    private boolean offerToQueue(PrintJob job, int type, ConcurrentLinkedQueue<PrintJob> queue) {
+        if (!enqueuedKeys.add(enqueueKey(job.id, type))) {
+            Log.d(TAG, "Skip duplicate enqueue jobId=" + job.id + " " + getTypeLabel(type));
+            return false;
         }
-        if (kitchen) {
-            kitchenQueue.add(job);
-            startProcessKitchen();
+        queue.add(job);
+        return true;
+    }
+
+    private void markTypePrinted(long jobId, int type) {
+        enqueuedKeys.remove(enqueueKey(jobId, type));
+        AtomicInteger remaining = jobTargetsRemaining.get(jobId);
+        if (remaining != null && remaining.decrementAndGet() <= 0) {
+            jobTargetsRemaining.remove(jobId);
+            db.delete(jobId);
+            Log.d(TAG, "All targets printed, deleted receipt id=" + jobId);
         }
-        if (k1) {
-            kitchen1Queue.add(job);
-            startProcessKitchen1();
-        }
-        if (k2) {
-            kitchen2Queue.add(job);
-            startProcessKitchen2();
-        }
-        if (k3) {
-            kitchen3Queue.add(job);
-            startProcessKitchen3();
-        }
-        if (k4) {
-            kitchen4Queue.add(job);
-            startProcessKitchen4();
-        }
-        if (k5) {
-            kitchen5Queue.add(job);
-            startProcessKitchen5();
-        }
+    }
+
+    private void markTypeFailed(long jobId, int type) {
+        enqueuedKeys.remove(enqueueKey(jobId, type));
     }
 
     private void startProcessThermal() {
@@ -247,11 +270,10 @@ public class PrintQueueManager {
                 } else {
                     printer.printKitchenReceipt(job.header, job.content, job.footer);
                 }
-                db.delete(job.id);
-                enqueuedIds.remove(job.id);
+                markTypePrinted(job.id, type);
             } catch (Exception e) {
                 Log.e(TAG, "Print failed type=" + type + " jobId=" + job.id + " ip=" + ip, e);
-                enqueuedIds.remove(job.id); // allow retry on next poll
+                markTypeFailed(job.id, type); // allow retry on next poll for this target only
             } finally {
                 if (printer != null) printer.close();
             }
