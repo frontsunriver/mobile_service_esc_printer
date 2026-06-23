@@ -165,6 +165,10 @@ public class HttpServerForegroundService extends Service {
             httpServer.start(30000);
             isRunning = true;
             if (receiptDbHelper == null) receiptDbHelper = new ReceiptDbHelper(this);
+            int cleared = receiptDbHelper.deleteAllPending();
+            if (cleared > 0) {
+                Log.i(TAG, "Cleared " + cleared + " stale pending receipt(s) from previous session");
+            }
             startPrintPoll();
             String url = getServerUrl();
             Log.i(TAG, "HTTP server started on port " + port + " " + getLocalIpAddress());
@@ -191,20 +195,11 @@ public class HttpServerForegroundService extends Service {
         isRunning = false;
     }
 
-    /** Poll DB every 8 sec; enqueue any existing receipts for printing. */
+    /** Reload printer IPs from config file. Does not dispatch print jobs (HTTP only). */
     private void pollDatabaseAndEnqueuePrintJobs() {
         try {
             PrintQueueManager queue = PrintQueueManager.getInstance(this);
-            queue.reloadPrinterConfig(); // reload IP list from external file every 8 sec
-            if (receiptDbHelper != null) {
-                java.util.List<PendingReceipt> pending = receiptDbHelper.getAllPending();
-                if (!pending.isEmpty()) {
-                    Log.d(TAG, "Print poll: found " + pending.size() + " pending receipt(s) in SQL, enqueueing for print");
-                    for (PendingReceipt r : pending) {
-                        queue.enqueueFromPending(r);
-                    }
-                }
-            }
+            queue.reloadPrinterConfig();
         } catch (Exception e) {
             Log.e(TAG, "Print poll failed", e);
         } finally {

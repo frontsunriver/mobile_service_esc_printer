@@ -76,6 +76,57 @@ public class ReceiptDbHelper extends SQLiteOpenHelper {
         }
     }
 
+    @Nullable
+    public PendingReceipt getById(long id) {
+        if (id < 0) return null;
+        try (Cursor c = getReadableDatabase().query(
+                TABLE_RECEIPTS, null, COL_ID + "=?",
+                new String[]{String.valueOf(id)}, null, null, null)) {
+            if (!c.moveToFirst()) return null;
+            return readPendingReceipt(c);
+        } catch (Exception e) {
+            Log.e(TAG, "getById failed for id=" + id, e);
+            return null;
+        }
+    }
+
+    /** Remove rows left from a previous session so they are not printed again on startup. */
+    public int deleteAllPending() {
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            return db.delete(TABLE_RECEIPTS, null, null);
+        } catch (Exception e) {
+            Log.e(TAG, "deleteAllPending failed", e);
+            return 0;
+        }
+    }
+
+    private static PendingReceipt readPendingReceipt(Cursor c) {
+        int idxId = c.getColumnIndex(COL_ID);
+        int idxHeader = c.getColumnIndex(COL_HEADER);
+        int idxContent = c.getColumnIndex(COL_CONTENT);
+        int idxFooter = c.getColumnIndex(COL_FOOTER);
+        int idxThermal = c.getColumnIndex(COL_THERMAL);
+        int idxKitchen = c.getColumnIndex(COL_KITCHEN);
+        int idxK1 = c.getColumnIndex(COL_KITCHEN1);
+        int idxK2 = c.getColumnIndex(COL_KITCHEN2);
+        int idxK3 = c.getColumnIndex(COL_KITCHEN3);
+        int idxK4 = c.getColumnIndex(COL_KITCHEN4);
+        int idxK5 = c.getColumnIndex(COL_KITCHEN5);
+        long id = idxId >= 0 ? c.getLong(idxId) : -1;
+        String header = idxHeader >= 0 ? c.getString(idxHeader) : "";
+        String content = idxContent >= 0 ? c.getString(idxContent) : "";
+        String footer = idxFooter >= 0 ? c.getString(idxFooter) : "";
+        boolean thermal = isFlagColumn(c, idxThermal);
+        boolean kitchen = isFlagColumn(c, idxKitchen);
+        boolean k1 = isFlagColumn(c, idxK1);
+        boolean k2 = isFlagColumn(c, idxK2);
+        boolean k3 = isFlagColumn(c, idxK3);
+        boolean k4 = isFlagColumn(c, idxK4);
+        boolean k5 = isFlagColumn(c, idxK5);
+        return new PendingReceipt(id, header, content, footer, thermal, kitchen, k1, k2, k3, k4, k5);
+    }
+
     /**
      * Get all receipt rows (for periodic poll to print any that exist in DB).
      * Order: oldest first (_id ASC).
@@ -83,30 +134,8 @@ public class ReceiptDbHelper extends SQLiteOpenHelper {
     public List<PendingReceipt> getAllPending() {
         List<PendingReceipt> list = new ArrayList<>();
         try (Cursor c = getReadableDatabase().query(TABLE_RECEIPTS, null, null, null, null, null, COL_ID + " ASC")) {
-            int idxId = c.getColumnIndex(COL_ID);
-            int idxHeader = c.getColumnIndex(COL_HEADER);
-            int idxContent = c.getColumnIndex(COL_CONTENT);
-            int idxFooter = c.getColumnIndex(COL_FOOTER);
-            int idxThermal = c.getColumnIndex(COL_THERMAL);
-            int idxKitchen = c.getColumnIndex(COL_KITCHEN);
-            int idxK1 = c.getColumnIndex(COL_KITCHEN1);
-            int idxK2 = c.getColumnIndex(COL_KITCHEN2);
-            int idxK3 = c.getColumnIndex(COL_KITCHEN3);
-            int idxK4 = c.getColumnIndex(COL_KITCHEN4);
-            int idxK5 = c.getColumnIndex(COL_KITCHEN5);
             while (c.moveToNext()) {
-                long id = idxId >= 0 ? c.getLong(idxId) : -1;
-                String header = idxHeader >= 0 ? c.getString(idxHeader) : "";
-                String content = idxContent >= 0 ? c.getString(idxContent) : "";
-                String footer = idxFooter >= 0 ? c.getString(idxFooter) : "";
-                boolean thermal = isFlagColumn(c, idxThermal);
-                boolean kitchen = isFlagColumn(c, idxKitchen);
-                boolean k1 = isFlagColumn(c, idxK1);
-                boolean k2 = isFlagColumn(c, idxK2);
-                boolean k3 = isFlagColumn(c, idxK3);
-                boolean k4 = isFlagColumn(c, idxK4);
-                boolean k5 = isFlagColumn(c, idxK5);
-                list.add(new PendingReceipt(id, header, content, footer, thermal, kitchen, k1, k2, k3, k4, k5));
+                list.add(readPendingReceipt(c));
             }
         } catch (Exception e) {
             Log.e(TAG, "getAllPending failed", e);
@@ -122,7 +151,22 @@ public class ReceiptDbHelper extends SQLiteOpenHelper {
             return v == 1;
         } catch (Exception ignored) { }
         String s = c.getString(columnIndex);
-        return "1".equals(s != null ? s.trim() : "");
+        if (s == null) return false;
+        s = s.trim().toLowerCase();
+        return "1".equals(s) || "true".equals(s);
+    }
+
+    /** True if a receipt row with this id still exists (not yet printed/deleted). */
+    public boolean exists(long id) {
+        if (id < 0) return false;
+        try (Cursor c = getReadableDatabase().query(
+                TABLE_RECEIPTS, new String[]{COL_ID}, COL_ID + "=?",
+                new String[]{String.valueOf(id)}, null, null, null)) {
+            return c.moveToFirst();
+        } catch (Exception e) {
+            Log.e(TAG, "exists failed for id=" + id, e);
+            return false;
+        }
     }
 
     /**

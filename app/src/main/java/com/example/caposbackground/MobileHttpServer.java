@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.json.JSONObject;
 
@@ -33,6 +34,10 @@ public class MobileHttpServer extends NanoHTTPD {
 
     private final Context appContext;
     private final ReceiptDbHelper receiptDbHelper;
+
+    /** Ignore duplicate POST bodies within this window (client retries). */
+    private static final long DUPLICATE_REQUEST_MS = 15000L;
+    private final ConcurrentHashMap<String, Long> recentRequestHashes = new ConcurrentHashMap<>();
 
     /** Use this constructor from the service so receipt JSON can be saved to SQLite. */
     public MobileHttpServer(Context context, int port) {
@@ -60,20 +65,17 @@ public class MobileHttpServer extends NanoHTTPD {
         boolean k4 = isFlagSet(bodyJson, "kitchen4");
         boolean k5 = isFlagSet(bodyJson, "kitchen5");
         if (!thermal && !kitchen && !k1 && !k2 && !k3 && !k4 && !k5) return;
-        String header = bodyJson.optString("header", "");
-        String content = bodyJson.optString("content", "");
-        String footer = bodyJson.optString("footer", "");
-        PendingReceipt pending = new PendingReceipt(id, header, content, footer,
-                thermal, kitchen, k1, k2, k3, k4, k5);
-        PrintQueueManager.getInstance(appContext).enqueueFromPending(pending);
+        PrintQueueManager.getInstance(appContext).dispatchReceipt(id);
     }
 
     private static boolean isFlagSet(JSONObject json, String key) {
         if (json == null || key == null) return false;
         Object v = json.opt(key);
         if (v == null) return false;
+        if (v instanceof Boolean) return (Boolean) v;
         if (v instanceof Number) return ((Number) v).intValue() == 1;
-        return "1".equals(v.toString().trim());
+        String s = v.toString().trim().toLowerCase();
+        return "1".equals(s) || "true".equals(s);
     }
 
     @Override
@@ -110,6 +112,17 @@ public class MobileHttpServer extends NanoHTTPD {
             }
 
             if (bodyJson != null && receiptDbHelper != null) {
+                String bodyKey = Integer.toHexString(bodyJson.toString().hashCode());
+                long now = System.currentTimeMillis();
+                Long last = recentRequestHashes.put(bodyKey, now);
+                if (last != null && (now - last) < DUPLICATE_REQUEST_MS) {
+                    Log.w(TAG, "Duplicate POST ignored (same body within "
+                            + DUPLICATE_REQUEST_MS + "ms)");
+                    return addCorsHeaders(newFixedLengthResponse(
+                            Response.Status.OK, MIME_PLAINTEXT, "OK duplicate ignored"), "*");
+                }
+                recentRequestHashes.entrySet().removeIf(e -> (now - e.getValue()) > DUPLICATE_REQUEST_MS);
+
                 long id = receiptDbHelper.insertFromJson(bodyJson);
                 if (id >= 0) {
                     Log.d(TAG, "Saved receipt to SQLite row id=" + id);
