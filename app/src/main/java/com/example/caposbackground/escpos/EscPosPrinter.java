@@ -38,7 +38,9 @@ import static com.example.caposbackground.escpos.EscPosCommands.*;
  * </pre>
  *
  * <p>Line formatting (same as Node module): use [L] left, [C] center, [R] right; &lt;b&gt;&lt;/b&gt; for bold,
- * &lt;u&gt;&lt;/u&gt; for underline, &lt;font size="big"&gt; for large text. Table lines: [L]col1[R]col2[R]col3.
+ * &lt;u&gt;&lt;/u&gt; for underline, &lt;font size="big"&gt; for large text,
+ * &lt;font color="bg-black"&gt; for white text on a black background.
+ * Table lines: [L]col1[R]col2[R]col3.
  * Split lines: [L]label [R]value prints label left and value right on one row.
  */
 public class EscPosPrinter {
@@ -97,6 +99,7 @@ public class EscPosPrinter {
         out.write(INIT);
         out.write(CANCEL_CONDENSED);
         out.write(FONT_NORMAL);
+        out.write(REVERSE_OFF);
         out.flush();
         return this;
     }
@@ -138,30 +141,68 @@ public class EscPosPrinter {
     // --- Formatted print (header/footer with [L]/[C]/[R], bold, underline, big) ---
 
     private static String stripTags(String s) {
-        return s == null ? "" : TAG_PATTERN.matcher(s).replaceAll("").trim();
+        return s == null ? "" : TAG_PATTERN.matcher(s).replaceAll("");
     }
 
-    private static void parseLine(String line, int[] outAlign, boolean[] outBold, boolean[] outUnderline, boolean[] outBig) {
+    /** Remove trailing spaces/tabs only; keep leading spaces for indent. */
+    private static String rtrim(String s) {
+        if (s == null || s.isEmpty()) return s == null ? "" : s;
+        int end = s.length();
+        while (end > 0) {
+            char c = s.charAt(end - 1);
+            if (c != ' ' && c != '\t' && c != '\r') break;
+            end--;
+        }
+        return s.substring(0, end);
+    }
+
+    private static int countLeadingSpaces(String s) {
+        if (s == null) return 0;
+        int i = 0;
+        while (i < s.length() && (s.charAt(i) == ' ' || s.charAt(i) == '\t')) i++;
+        return i;
+    }
+
+    private static boolean hasBgBlack(String line) {
+        if (line == null) return false;
+        String lower = line.toLowerCase();
+        return lower.contains("color=\"bg-black\"")
+                || lower.contains("color='bg-black'")
+                || lower.contains("color=bg-black");
+    }
+
+    private static void parseLine(String line, int[] outAlign, boolean[] outBold,
+                                  boolean[] outUnderline, boolean[] outBig, boolean[] outBgBlack) {
         outBold[0] = line != null && line.contains("<b>") && line.contains("</b>");
         outUnderline[0] = line != null && (line.contains("<u>") && line.contains("</u>"));
         outBig[0] = line != null && (line.contains("size=\"big\"") || line.contains("size='big'"));
+        outBgBlack[0] = hasBgBlack(line);
         String clean = stripTags(line);
-        if (clean.startsWith("[L]")) {
+        int lead = countLeadingSpaces(clean);
+        String marked = clean.substring(lead);
+        if (marked.startsWith("[L]")) {
             outAlign[0] = 0;
-        } else if (clean.startsWith("[R]")) {
+        } else if (marked.startsWith("[R]")) {
             outAlign[0] = 2;
-        } else if (clean.startsWith("[C]")) {
+        } else if (marked.startsWith("[C]")) {
             outAlign[0] = 1;
         } else {
             outAlign[0] = 0;
         }
     }
 
+    /**
+     * Drop [L]/[C]/[R] if present. Keep leading spaces after the marker so indent is printed.
+     */
     private static String stripPrefix(String clean) {
-        if (clean.startsWith("[L]") || clean.startsWith("[R]") || clean.startsWith("[C]")) {
-            return clean.substring(3).trim();
+        if (clean == null) return "";
+        String s = rtrim(clean);
+        int lead = countLeadingSpaces(s);
+        String marked = s.substring(lead);
+        if (marked.startsWith("[L]") || marked.startsWith("[R]") || marked.startsWith("[C]")) {
+            return marked.substring(3);
         }
-        return clean.trim();
+        return s;
     }
 
     /** True when the line mixes left content with a later [R] (e.g. "[L]test [R]100" or "test [R]100"). */
@@ -238,14 +279,18 @@ public class EscPosPrinter {
         else out.write(ALIGN_LEFT);
     }
 
-    /** Print lines with [L]/[C]/[R], &lt;b&gt;, &lt;u&gt;, &lt;font size="big"&gt;. Optionally cut at end. Call init() once before if starting a new receipt. */
+    /** Print lines with [L]/[C]/[R], &lt;b&gt;, &lt;u&gt;, &lt;font size="big"&gt;, &lt;font color="bg-black"&gt;. Optionally cut at end. Call init() once before if starting a new receipt. */
     public void printFormatted(String[] lines, boolean cutAtEnd) throws IOException {
         if (lines == null) return;
         for (String line : lines) {
-            if (line == null || line.trim().isEmpty()) continue;
+            if (line == null) continue;
+            if (line.isEmpty()) {
+                feedLine();
+                continue;
+            }
             int[] align = {0};
-            boolean[] bold = {false}, underline = {false}, big = {false};
-            parseLine(line, align, bold, underline, big);
+            boolean[] bold = {false}, underline = {false}, big = {false}, bgBlack = {false};
+            parseLine(line, align, bold, underline, big, bgBlack);
             String clean = stripTags(line);
             String text;
             if (needsCompositeLine(clean)) {
@@ -256,15 +301,27 @@ public class EscPosPrinter {
             } else {
                 text = stripPrefix(clean);
             }
-            if (text.isEmpty()) continue;
+            if (text.isEmpty()) {
+                feedLine();
+                continue;
+            }
             if (big[0]) out.write(FONT_BIG);
             else out.write(FONT_NORMAL);
             if (underline[0]) out.write(FONT_UNDERLINE);
             if (bold[0]) out.write(BOLD_ON);
             else out.write(BOLD_OFF);
             align(align[0]);
-            out.write((text + "\n").getBytes(charset));
+            int indent = countLeadingSpaces(text);
+            if (indent > 0) {
+                out.write(text.substring(0, indent).getBytes(charset));
+                text = text.substring(indent);
+            }
+            if (bgBlack[0]) out.write(REVERSE_ON);
+            if (!text.isEmpty()) out.write(text.getBytes(charset));
+            if (bgBlack[0]) out.write(REVERSE_OFF);
+            out.write('\n');
             out.flush();
+            out.write(REVERSE_OFF);
             out.write(FONT_NORMAL);
             out.write(BOLD_OFF);
             out.write(ALIGN_LEFT);
