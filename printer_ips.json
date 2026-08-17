@@ -1,5 +1,7 @@
 {
+  "thermal_connection": "usb",
   "thermal_ip": "10.88.111.57",
+  "kitchen_connection": "usb",
   "kitchen_ip": "10.88.111.57",
   "kitchen1_ip": "",
   "kitchen2_ip": "",

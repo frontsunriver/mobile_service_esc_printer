@@ -25,9 +25,9 @@ import java.util.Map;
 import org.json.JSONObject;
 
 /**
- * Printer IP configuration (thermal + kitchen1..5). Loads from external file first
+ * Printer IP / connection configuration (thermal + kitchen + kitchen1..5). Loads from external file first
  * ({@link #getConfigFilePath(Context)}); if a value is missing or file is not available, uses constants
- * ({@link #CONST_THERMAL_IP}, etc.) as fallback.
+ * ({@link #CONST_THERMAL_IP}, etc.) as fallback. Thermal and primary kitchen support USB or network.
  */
 public class PrinterConfig {
 
@@ -60,6 +60,11 @@ public class PrinterConfig {
     public static final String CONST_KITCHEN3_IP = "192.168.2.104";
     public static final String CONST_KITCHEN4_IP = "";  // set if you use kitchen4
     public static final String CONST_KITCHEN5_IP = "";  // set if you use kitchen5
+    /** thermal_connection / kitchen_connection: "network" (TCP) or "usb". kitchen1..5 stay network. */
+    public static final String CONST_THERMAL_CONNECTION = "network";
+    public static final String CONST_KITCHEN_CONNECTION = "network";
+    public static final String CONNECTION_NETWORK = "network";
+    public static final String CONNECTION_USB = "usb";
 
     private final Context appContext;
     private final SharedPreferences prefs;
@@ -112,7 +117,9 @@ public class PrinterConfig {
     /** Default content for printer_ips.json when the file does not exist. */
     private static String getDefaultConfigContent() {
         return "{\n"
+                + "  \"thermal_connection\": \"network\",\n"
                 + "  \"thermal_ip\": \"192.168.2.100\",\n"
+                + "  \"kitchen_connection\": \"network\",\n"
                 + "  \"kitchen_ip\": \"192.168.2.101\",\n"
                 + "  \"kitchen1_ip\": \"192.168.2.102\",\n"
                 + "  \"kitchen2_ip\": \"192.168.2.103\",\n"
@@ -440,6 +447,47 @@ public class PrinterConfig {
     @Nullable
     public String getThermalIp() {
         return getIp("thermal_ip", CONST_THERMAL_IP);
+    }
+
+    /**
+     * Customer (thermal) printer transport: {@link #CONNECTION_USB} or {@link #CONNECTION_NETWORK}.
+     */
+    public String getThermalConnection() {
+        return parseConnection(getIp("thermal_connection", CONST_THERMAL_CONNECTION));
+    }
+
+    public boolean isThermalUsb() {
+        return CONNECTION_USB.equals(getThermalConnection());
+    }
+
+    /**
+     * Primary kitchen printer transport: {@link #CONNECTION_USB} or {@link #CONNECTION_NETWORK}.
+     * kitchen1..5 remain network-only.
+     */
+    public String getKitchenConnection() {
+        return parseConnection(getIp("kitchen_connection", CONST_KITCHEN_CONNECTION));
+    }
+
+    public boolean isKitchenUsb() {
+        return CONNECTION_USB.equals(getKitchenConnection());
+    }
+
+    /** True when this queue type should print over USB (thermal or primary kitchen). */
+    public boolean isUsbForType(int type) {
+        if (type == 0) return isThermalUsb();
+        if (type == 1) return isKitchenUsb();
+        return false;
+    }
+
+    public boolean usesAnyUsbPrinter() {
+        return isThermalUsb() || isKitchenUsb();
+    }
+
+    private static String parseConnection(String raw) {
+        if (raw == null) return CONNECTION_NETWORK;
+        String v = raw.trim().toLowerCase();
+        if (CONNECTION_USB.equals(v) || "1".equals(v) || "true".equals(v)) return CONNECTION_USB;
+        return CONNECTION_NETWORK;
     }
 
     @Nullable

@@ -51,6 +51,7 @@ public class PrintQueueManager {
     public static final int TYPE_KITCHEN5 = 6;
 
     private static volatile PrintQueueManager instance;
+    private final Context appContext;
     private final PrinterConfig config;
     private final ReceiptDbHelper db;
     private final Object dispatchLock = new Object();
@@ -91,8 +92,10 @@ public class PrintQueueManager {
         volatile boolean printing;
     }
 
+    /** USB thermal and USB kitchen share one lock so they never write the cable in parallel. */
     private Object lockForIp(String ip) {
-        return ipPrintLocks.computeIfAbsent(ip, k -> new Object());
+        String key = (ip != null && ip.startsWith("usb:")) ? "usb" : ip;
+        return ipPrintLocks.computeIfAbsent(key, k -> new Object());
     }
 
     public static PrintQueueManager getInstance(Context context) {
@@ -107,6 +110,7 @@ public class PrintQueueManager {
     }
 
     private PrintQueueManager(Context appContext) {
+        this.appContext = appContext;
         this.config = new PrinterConfig(appContext);
         this.db = new ReceiptDbHelper(appContext);
     }
@@ -174,7 +178,7 @@ public class PrintQueueManager {
         }
     }
 
-    /** One print target per unique printer IP; kitchen beats thermal on the same IP. */
+    /** One print target per unique printer; USB thermal/kitchen are separate from any network IP. */
     private List<Integer> resolveTypesToPrint(PendingReceipt r) {
         Map<String, Integer> typeByIp = new LinkedHashMap<>();
         int[] types = {
@@ -186,11 +190,21 @@ public class PrintQueueManager {
         };
         for (int i = 0; i < types.length; i++) {
             if (!flags[i]) continue;
-            String ip = normalizeIp(config.getIpForType(types[i]));
-            if (ip == null) continue;
-            typeByIp.putIfAbsent(ip, types[i]);
+            String key = targetKey(types[i]);
+            if (key == null) continue;
+            typeByIp.putIfAbsent(key, types[i]);
         }
         return new ArrayList<>(typeByIp.values());
+    }
+
+    /** USB targets use synthetic keys so they never collide with a network IP. */
+    private String targetKey(int type) {
+        if (config.isUsbForType(type)) return usbTargetKey(type);
+        return normalizeIp(config.getIpForType(type));
+    }
+
+    private static String usbTargetKey(int type) {
+        return type == TYPE_THERMAL ? "usb:thermal" : "usb:kitchen";
     }
 
     private static String normalizeIp(String ip) {
@@ -236,7 +250,7 @@ public class PrintQueueManager {
         String hash = contentHash(r);
         long now = System.currentTimeMillis();
         for (int type : typesToPrint) {
-            String ip = normalizeIp(config.getIpForType(type));
+            String ip = targetKey(type);
             if (ip == null) continue;
             IpPrintState state = ipPrintState.get(ip);
             if (state == null) continue;
@@ -273,7 +287,7 @@ public class PrintQueueManager {
         String hash = contentHash(r);
         long now = System.currentTimeMillis();
         for (int type : typesToPrint) {
-            String ip = normalizeIp(config.getIpForType(type));
+            String ip = targetKey(type);
             if (ip == null) continue;
             IpPrintState state = ipPrintState.computeIfAbsent(ip, k -> new IpPrintState());
             state.contentHash = hash;
@@ -414,12 +428,17 @@ public class PrintQueueManager {
 
     private EscPosPrinter connectWithRetry(String ip, int port, long jobId, int type) throws IOException {
         IOException last = null;
+        boolean usb = config.isUsbForType(type);
         for (int attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt++) {
             try {
                 if (attempt > 1) {
                     Log.i(TAG, "Connect retry " + attempt + "/" + MAX_CONNECT_ATTEMPTS
-                            + " jobId=" + jobId + " " + getTypeLabel(type));
+                            + " jobId=" + jobId + " " + getTypeLabel(type)
+                            + (usb ? " usb" : " network"));
                     Thread.sleep(CONNECT_RETRY_DELAY_MS);
+                }
+                if (usb) {
+                    return EscPosPrinter.connectUsb(appContext);
                 }
                 return EscPosPrinter.connect(ip, port);
             } catch (IOException e) {
@@ -435,7 +454,8 @@ public class PrintQueueManager {
     }
 
     private void processQueue(ConcurrentLinkedQueue<PrintJob> queue, int type, boolean isThermal) {
-        String ip = normalizeIp(config.getIpForType(type));
+        boolean usb = config.isUsbForType(type);
+        String ip = usb ? usbTargetKey(type) : normalizeIp(config.getIpForType(type));
         if (ip == null) {
             Log.w(TAG, "No printer IP for " + getTypeLabel(type));
             return;
@@ -472,7 +492,7 @@ public class PrintQueueManager {
                 boolean connected = false;
                 try {
                     Log.i(TAG, "PRINT START jobId=" + job.id + " " + getTypeLabel(type)
-                            + " ip=" + ip + " port=" + port);
+                            + (usb ? " usb" : (" ip=" + ip + " port=" + port)));
                     printer = connectWithRetry(ip, port, job.id, type);
                     connected = true;
                     if (isThermal) {

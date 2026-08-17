@@ -1,5 +1,6 @@
 package com.example.caposbackground.escpos;
 
+import android.content.Context;
 import android.util.Log;
 
 import java.io.IOException;
@@ -86,6 +87,14 @@ public class EscPosPrinter {
         socket.connect(new InetSocketAddress(host, port), timeoutMs);
         socket.setSoTimeout(timeoutMs);
         return new EscPosPrinter(socket.getOutputStream());
+    }
+
+    /**
+     * Connect to a USB ESC/POS printer attached to this Android device
+     * (customer thermal or primary kitchen, depending on config).
+     */
+    public static EscPosPrinter connectUsb(Context context) throws IOException {
+        return new EscPosPrinter(UsbEscPosConnection.open(context));
     }
 
     // --- Raw command API ---

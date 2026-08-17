@@ -29,6 +29,8 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
+import com.example.caposbackground.escpos.UsbEscPosConnection;
+
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
@@ -138,6 +140,21 @@ public class MainActivity extends AppCompatActivity {
         buttonToggle.setOnClickListener(v -> toggleServer());
         buttonCopy.setOnClickListener(v -> copyUrlToClipboard());
         findViewById(R.id.button_select_config).setOnClickListener(v -> openPrinterConfigFilePicker());
+        requestUsbPrinterPermissionIfNeeded();
+    }
+
+    /** If thermal or kitchen is USB, ask for USB printer access while the UI is visible. */
+    private void requestUsbPrinterPermissionIfNeeded() {
+        try {
+            PrintQueueManager queue = PrintQueueManager.getInstance(this);
+            if (queue != null) queue.reloadPrinterConfig();
+            PrinterConfig cfg = new PrinterConfig(this);
+            if (cfg.usesAnyUsbPrinter()) {
+                UsbEscPosConnection.requestPermissionIfNeeded(this);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "USB permission prompt skipped", e);
+        }
     }
 
     @Override
